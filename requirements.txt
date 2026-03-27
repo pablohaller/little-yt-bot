@@ -1,0 +1,6 @@
+discord.py[voice]>=2.3.0
+yt-dlp>=2024.1.1
+PyNaCl>=1.5.0
+python-dotenv>=1.0.0
+static-ffmpeg>=2.5
+spotdl>=4.2.0
