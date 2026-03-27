@@ -13,6 +13,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
+SYNC_GLOBAL = os.getenv("SYNC_GLOBAL", "").lower() in ("1", "true", "yes")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
@@ -244,7 +245,7 @@ async def on_ready():
         bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
         print(f"Slash commands synced to guild {GUILD_ID}.")
-    else:
+    if not GUILD_ID or SYNC_GLOBAL:
         await bot.tree.sync()
         print("Slash commands synced globally (may take up to 1 hour).")
     print(f"Logged in as {bot.user} (id: {bot.user.id})")
