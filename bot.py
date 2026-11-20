@@ -16,6 +16,11 @@ GUILD_ID = os.getenv("GUILD_ID")
 SYNC_GLOBAL = os.getenv("SYNC_GLOBAL", "").lower() in ("1", "true", "yes")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+# Path to a Netscape-format cookies.txt exported from a logged-in YouTube
+# account. Authenticated requests bypass the PO-token 403 on googlevideo.
+YTDLP_COOKIES = os.getenv("YTDLP_COOKIES")
+# Force IPv4 egress — some IPv6 ranges get 403'd by YouTube.
+FORCE_IPV4 = os.getenv("YTDLP_FORCE_IPV4", "").lower() in ("1", "true", "yes")
 
 SPOTDL_AVAILABLE = False
 if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
@@ -25,10 +30,25 @@ if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
     except ImportError:
         pass
 
-FFMPEG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn",
-}
+FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+
+
+def build_ffmpeg_options(headers: dict | None) -> dict:
+    """Build ffmpeg options, forwarding yt-dlp's resolved HTTP headers.
+
+    YouTube ties a stream URL's signature to the player client's User-Agent.
+    ffmpeg otherwise requests with its own UA and YouTube replies 403, so we
+    replay the same headers (notably User-Agent) yt-dlp used for extraction.
+    """
+    before = FFMPEG_BEFORE
+    if headers:
+        if user_agent := headers.get("User-Agent"):
+            before += f' -user_agent "{user_agent}"'
+        if extra := "".join(
+            f"{k}: {v}\r\n" for k, v in headers.items() if k != "User-Agent"
+        ):
+            before += f' -headers "{extra}"'
+    return {"before_options": before, "options": "-vn"}
 
 YDL_OPTIONS = {
     "format": "bestaudio/best",
@@ -36,6 +56,10 @@ YDL_OPTIONS = {
     "no_warnings": True,
     "noplaylist": False,
 }
+if YTDLP_COOKIES:
+    YDL_OPTIONS["cookiefile"] = YTDLP_COOKIES
+if FORCE_IPV4:
+    YDL_OPTIONS["source_address"] = "0.0.0.0"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -73,15 +97,15 @@ async def resolve_spotify(url: str) -> list[tuple[str, str]]:
     ]
 
 
-async def fetch_stream_info(query: str) -> tuple[str, str | None, str | None]:
-    """Fetch a fresh stream URL, thumbnail, and webpage URL for a webpage URL or ytsearch query."""
+async def fetch_stream_info(query: str) -> tuple[str, str | None, str | None, dict | None]:
+    """Fetch a fresh stream URL, thumbnail, webpage URL, and HTTP headers for a URL or ytsearch query."""
     loop = asyncio.get_event_loop()
     opts = {**YDL_OPTIONS, "noplaylist": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = await loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
     if "entries" in info:
         info = info["entries"][0]
-    return info["url"], info.get("thumbnail"), info.get("webpage_url")
+    return info["url"], info.get("thumbnail"), info.get("webpage_url"), info.get("http_headers")
 
 
 async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient | None:
@@ -206,7 +230,7 @@ async def play_next(guild: discord.Guild) -> None:
     channel = guild_channels.get(guild.id)
 
     try:
-        stream_url, thumbnail, webpage_url = await fetch_stream_info(query)
+        stream_url, thumbnail, webpage_url, http_headers = await fetch_stream_info(query)
     except Exception as e:
         if channel:
             await channel.send(f"❌ Could not fetch **{title}**: {e}")
@@ -218,7 +242,7 @@ async def play_next(guild: discord.Guild) -> None:
         return
 
     source = discord.PCMVolumeTransformer(
-        discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS), volume=0.5
+        discord.FFmpegPCMAudio(stream_url, **build_ffmpeg_options(http_headers)), volume=0.5
     )
 
     def after_play(error: Exception | None) -> None:
